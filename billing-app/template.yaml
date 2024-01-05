@@ -1,0 +1,55 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Notify Dsicord every month 1st of AWS billing
+
+Globals:
+  Function:
+    Timeout: 20
+    MemorySize: 512
+
+Parameters:
+  DiscordWebhookUrl:
+    Type: String
+    Default: hoge
+
+Resources:
+  BillingIamRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: "NotifyBillingLambdaPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                  - "ce:GetCostAndUsage"
+                Resource: "*"
+
+  NotifyBillingInfo:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: notify_billing/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Architectures:
+      - x86_64
+      Environment:
+        Variables:
+          DISCORD_WEBHOOK_URL: !Ref DiscordWebhookUrl
+      Role: !GetAtt BillingIamRole.Arn
+      Events:
+        NotifySlack:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 12 1 * ? *) # 毎月1日PM12時

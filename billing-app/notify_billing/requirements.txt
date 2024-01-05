@@ -1,0 +1,4 @@
+requests
+urllib3<2
+pandas_datareader
+yfinance
