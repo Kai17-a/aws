@@ -24,19 +24,19 @@ def get_exchange_rate() -> int:
     """
     try:
         date_range = {
-            "start": (dt_now + timedelta(days=-1)).isoformat(),
-            "end": dt_now.isoformat()
+            "start": (dt_now + timedelta(days=-1)).strftime('%Y-%m-%d'),
+            "end": dt_now.strftime('%Y-%m-%d')
         }
         ticker = "JPY=X"
         yf.pdr_override()
         df = pdr.get_data_yahoo(ticker, date_range["start"], date_range["end"])
         exchange_rate = math.ceil(df.iloc[0][3])
         return exchange_rate
-    except:
-        logger.error("為替レートの取得に失敗しました。")
+    except Exception as e:
+        logger.error(f"為替レートの取得に失敗しました。エラー: {str(e)}")
         return 0
 
-def post_discord(title:str, msg: str) -> None:
+def post_discord(title:str, msg: str, footer: str) -> None:
     """
     discord webhook通知
 
@@ -44,22 +44,35 @@ def post_discord(title:str, msg: str) -> None:
     ----------
     msg : 送信メッセージ
     """
-    last_month = dt_now + timedelta(days=-1)
-    last_month_year = last_month.year
-    last_month_month = last_month.month
-    if last_month_month == 1:
-        last_month_year -= 1
-        last_month_month = 12
-
     url = os.getenv('DISCORD_WEBHOOK_URL')
-    body = {
-        "content": f"@everyone\n",
-        "embeds": [{
-            "title": f"***{title}***",
-            "description": f"{msg}"
-        }]
-    }
-    requests.post(url, json=body)
+    if not url:
+        logger.error("DISCORD_WEBHOOK_URLが設定されていません。")
+        return
+    
+    if footer:
+        body = {
+            "content": f"@everyone\n",
+            "embeds": [{
+                "title": title,
+                "description": msg,
+                "footer": {
+                    "text": footer
+                }
+            }]
+        }
+    else:
+        body = {
+            "content": f"@everyone\n",
+            "embeds": [{
+                "title": f"{title}",
+                "description": f"{msg}"
+            }]
+        }
+
+    try:
+        requests.post(url, json=body)
+    except Exception as e:
+        logger.exception(f"Discordへの通知に失敗しました。エラー: {str(e)}")
     
 def get_total_billing(client):
     """
@@ -157,20 +170,25 @@ def get_message(total_billing: dict, service_billings: list) -> (str, str):
         メッセージタイトル
     details : str
         メッセージ内容
+    footer : str
+        フッターメッセージ
     """
     start = datetime.strptime(total_billing['start'], '%Y-%m-%d').strftime('%m/%d')
 
     end_today = datetime.strptime(total_billing['end'], '%Y-%m-%d')
-    end_yesterday = (end_today - timedelta(days=1)).strftime('%m/%d')
+    end_yesterday = end_today.strftime('%m/%d')
 
     total = round(float(total_billing['billing']), 2)
     exchange_rate = get_exchange_rate()
+
+    # タイトル
     if exchange_rate > 0:
         total_yen = math.ceil(total * exchange_rate)
         title = f'{start}～{end_yesterday}の請求額は、￥{total_yen} ({total:.2f} USD)です。'
     else:
         title = f'{start}～{end_yesterday}の請求額は、{total:.2f} USDです。'
 
+    # メッセージボディ
     details = []
     for item in service_billings:
         service_name = item['service_name']
@@ -185,7 +203,12 @@ def get_message(total_billing: dict, service_billings: list) -> (str, str):
         else:
             details.append(f'・{service_name}: {billing:.2f} USD')
 
-    return title, '\n'.join(details)
+    # フッターメッセージ
+    if exchange_rate > 0:
+        footer = f"※為替レート: {exchange_rate} 円/1ドル ({end_yesterday} 時点)"
+
+
+    return title, '\n'.join(details), footer
 
 def get_total_cost_date_range() -> (str, str):
     """
@@ -199,8 +222,14 @@ def get_total_cost_date_range() -> (str, str):
     end_date : str
         期末
     """
-    start_date = get_last_month_first_day()
-    end_date = get_this_month_first_day()
+    start_date = 0
+    end_date = 0
+    if dt_now.day == 1:
+        start_date = get_last_month_first_day()
+        end_date = get_this_month_first_day()
+    else:
+        start_date = get_this_month_first_day()
+        end_date = (dt_now + timedelta(days=-1)).strftime('%Y-%m-%d')
     return start_date, end_date
 
 def get_last_month_first_day() -> str:
@@ -212,30 +241,26 @@ def get_last_month_first_day() -> str:
     last_month_first_day : str
         システム日付一月前月初日付
     """
-    date_now = dt_now
-    last_month = date_now.month - 1
-    last_month_year = date_now.year
+    last_month = dt_now.month - 1
+    last_month_year = dt_now.year
     if last_month == 0:
         last_month = 12
         last_month_year -= 1
-    last_month_first_day = date_now.replace(year=last_month_year ,month=last_month, day=1).isoformat()
-    return last_month_first_day
+    return dt_now.replace(year=last_month_year ,month=last_month, day=1).strftime('%Y-%m-%d')
 
 def get_this_month_first_day() -> str:
     """
-    システム日付の月初日付を取得
     
     Returns
     -------
     this_month_first_day : str
         システム日付月初日付
     """
-    return dt_now.replace(day=1).isoformat()
+    return dt_now.replace(day=1).strftime('%Y-%m-%d')
 
 
 def lambda_handler(event, context) -> None:
-    
     total_billing = get_total_billing(ce_client)
     service_billings = get_service_billings(ce_client)
-    (title, detail) = get_message(total_billing, service_billings)
-    post_discord(title, detail)
+    (title, detail, footer) = get_message(total_billing, service_billings)
+    post_discord(title, detail, footer)
