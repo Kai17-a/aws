@@ -90,22 +90,25 @@ def get_total_billing(client):
         end: 対象期間期末
         billing: 総額
     """
-    (start_date, end_date) = get_total_cost_date_range()
-    response = client.get_cost_and_usage(
-        TimePeriod={
-            'Start': start_date,
-            'End': end_date
-        },
-        Granularity='MONTHLY',
-        Metrics=[
-            'AmortizedCost'
-        ]
-    )
-    return {
-        'start': response['ResultsByTime'][0]['TimePeriod']['Start'],
-        'end': response['ResultsByTime'][0]['TimePeriod']['End'],
-        'billing': response['ResultsByTime'][0]['Total']['AmortizedCost']['Amount'],
-    }
+    try:
+        (start_date, end_date) = get_total_cost_date_range()
+        response = client.get_cost_and_usage(
+            TimePeriod={
+                'Start': start_date,
+                'End': end_date
+            },
+            Granularity='MONTHLY',
+            Metrics=[
+                'AmortizedCost'
+            ]
+        )
+        return {
+            'start': response['ResultsByTime'][0]['TimePeriod']['Start'],
+            'end': response['ResultsByTime'][0]['TimePeriod']['End'],
+            'billing': response['ResultsByTime'][0]['Total']['AmortizedCost']['Amount'],
+        }
+    except Exception as e:
+        logger.exception(f"資料料金の取得に失敗しました。。エラー: {str(e)}")
 
 def get_service_billings(client):
     """
@@ -122,31 +125,34 @@ def get_service_billings(client):
         service_name: サービス名
         billing: サービス料金
     """
-    (start_date, end_date) = get_total_cost_date_range()
+    try:
+        (start_date, end_date) = get_total_cost_date_range()
 
-    response = client.get_cost_and_usage(
-        TimePeriod={
-            'Start': start_date,
-            'End': end_date
-        },
-        Granularity='MONTHLY',
-        Metrics=[
-            'AmortizedCost'
-        ],
-        GroupBy=[
-            {
-                'Type': 'DIMENSION',
-                'Key': 'SERVICE'
-            }
-        ]
-    )
-    billings = []
-    for item in response['ResultsByTime'][0]['Groups']:
-        billings.append({
-            'service_name': item['Keys'][0],
-            'billing': item['Metrics']['AmortizedCost']['Amount']
-        })
-    return billings
+        response = client.get_cost_and_usage(
+            TimePeriod={
+                'Start': start_date,
+                'End': end_date
+            },
+            Granularity='MONTHLY',
+            Metrics=[
+                'AmortizedCost'
+            ],
+            GroupBy=[
+                {
+                    'Type': 'DIMENSION',
+                    'Key': 'SERVICE'
+                }
+            ]
+        )
+        billings = []
+        for item in response['ResultsByTime'][0]['Groups']:
+            billings.append({
+                'service_name': item['Keys'][0],
+                'billing': item['Metrics']['AmortizedCost']['Amount']
+            })
+        return billings
+    except Exception as e:
+        logger.exception(f"資料料金の取得に失敗しました。。エラー: {str(e)}")
 
 def get_message(total_billing: dict, service_billings: list) -> (str, str):
     """
