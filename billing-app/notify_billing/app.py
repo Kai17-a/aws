@@ -4,12 +4,14 @@ import boto3
 import requests
 import logging
 import yfinance as yf 
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, timezone
 from pandas_datareader import data as pdr
 
 logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(asctime)s %(message)s")
 logger = logging.getLogger()
-dt_now = date.today()
+ce_client = boto3.client('ce', region_name='ap-northeast-1')
+JST = timezone(timedelta(hours=+9), 'JST')
+dt_now = datetime.now(JST)
 
 def get_exchange_rate() -> int:
     """
@@ -232,7 +234,7 @@ def get_this_month_first_day() -> str:
 
 
 def lambda_handler(event, context) -> None:
-    ce_client = boto3.client('ce', region_name='ap-northeast-1')
+    
     total_billing = get_total_billing(ce_client)
     service_billings = get_service_billings(ce_client)
     (title, detail) = get_message(total_billing, service_billings)
