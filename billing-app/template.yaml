@@ -4,7 +4,7 @@ Description: Notify Dsicord every month 1st of AWS billing
 
 Globals:
   Function:
-    Timeout: 20
+    Timeout: 25
     MemorySize: 512
 
 Parameters:
@@ -39,6 +39,7 @@ Resources:
   NotifyBillingInfo:
     Type: AWS::Serverless::Function
     Properties:
+      FunctionName: notify-billing-function
       CodeUri: notify_billing/
       Handler: app.lambda_handler
       Runtime: python3.9
