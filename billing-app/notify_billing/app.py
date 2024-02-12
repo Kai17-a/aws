@@ -229,13 +229,12 @@ def get_total_cost_date_range() -> (str, str):
         期末
     """
     start_date = 0
-    end_date = 0
+    end_date = (dt_now + timedelta(days=-1)).strftime('%Y-%m-%d')
     if dt_now.day == 1:
         start_date = get_last_month_first_day()
-        end_date = get_this_month_first_day()
     else:
         start_date = get_this_month_first_day()
-        end_date = (dt_now + timedelta(days=-1)).strftime('%Y-%m-%d')
+    
     return start_date, end_date
 
 def get_last_month_first_day() -> str:
