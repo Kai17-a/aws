@@ -1,11 +1,9 @@
 import os
-import math
 import boto3
 import requests
 import logging
-import yfinance as yf
 from datetime import datetime, timedelta, timezone
-from pandas_datareader import data as pdr
+from decimal import *
 
 logging.basicConfig(
     level=logging.INFO, format="[%(levelname)s] %(asctime)s %(message)s"
@@ -16,7 +14,7 @@ JST = timezone(timedelta(hours=+9), "JST")
 dt_now = datetime.now(JST)
 
 
-def get_exchange_rate() -> int:
+def get_exchange_rate() -> Decimal:
     """
     ドル円為替レート取得
 
@@ -26,15 +24,10 @@ def get_exchange_rate() -> int:
         ドル円為替レート
     """
     try:
-        date_range = {
-            "start": (dt_now + timedelta(days=-1)).strftime("%Y-%m-%d"),
-            "end": dt_now.strftime("%Y-%m-%d"),
-        }
-        ticker = "JPY=X"
-        yf.pdr_override()
-        df = pdr.get_data_yahoo(ticker, date_range["start"], date_range["end"])
-        exchange_rate = math.ceil(df.iloc[0][3])
-        return exchange_rate
+        url = os.getenv("CHANGE_RATE_URL")
+        response = requests.get(url)
+        data = response.json()
+        return Decimal(data["values"][0][0])
     except Exception as e:
         logger.error(f"為替レートの取得に失敗しました。エラー: {str(e)}")
         return 0
@@ -72,7 +65,7 @@ def post_discord(title: str, msg: str, footer: str) -> None:
         logger.exception(f"Discordへの通知に失敗しました。エラー: {str(e)}")
 
 
-def get_total_billing(client):
+def get_total_billing(client) -> dict[str, str, Decimal]:
     """
     AWS使用料金の総額取得
 
@@ -95,10 +88,14 @@ def get_total_billing(client):
             Granularity="MONTHLY",
             Metrics=["AmortizedCost"],
         )
+        # 少数第2で切り上げ
+        billing = Decimal(
+            response["ResultsByTime"][0]["Total"]["AmortizedCost"]["Amount"]
+        ).quantize(Decimal("0.00"), rounding=ROUND_UP)
         return {
             "start": response["ResultsByTime"][0]["TimePeriod"]["Start"],
             "end": response["ResultsByTime"][0]["TimePeriod"]["End"],
-            "billing": response["ResultsByTime"][0]["Total"]["AmortizedCost"]["Amount"],
+            "billing": billing,
         }
     except Exception as e:
         logger.exception(f"資料料金の取得に失敗しました。。エラー: {str(e)}")
@@ -141,7 +138,7 @@ def get_service_billings(client):
         logger.exception(f"資料料金の取得に失敗しました。。エラー: {str(e)}")
 
 
-def get_message(total_billing: dict, service_billings: list) -> (str, str):
+def get_message(total_billing: dict, service_billings: list) -> (str, str, str):
     """
     Discordへ送信するメッセージの内容を作成
 
@@ -171,12 +168,12 @@ def get_message(total_billing: dict, service_billings: list) -> (str, str):
     end_today = datetime.strptime(total_billing["end"], "%Y-%m-%d")
     end_yesterday = end_today.strftime("%m/%d")
 
-    total = round(float(total_billing["billing"]), 2)
+    total = total_billing["billing"]
     exchange_rate = get_exchange_rate()
 
     # タイトル
     if exchange_rate > 0:
-        total_yen = math.ceil(total * exchange_rate)
+        total_yen = (total * exchange_rate).quantize(Decimal("0.00"), rounding=ROUND_UP)
         title = (
             f"{start}～{end_yesterday}の請求額は、￥{total_yen} ({total:.2f} USD)です。"
         )
@@ -187,13 +184,15 @@ def get_message(total_billing: dict, service_billings: list) -> (str, str):
     details = []
     for item in service_billings:
         service_name = item["service_name"]
-        billing = round(float(item["billing"]), 2)
+        billing = Decimal(item["billing"]).quantize(Decimal("0.00"), rounding=ROUND_UP)
 
         if billing == 0.0:
             continue
 
         if exchange_rate > 0:
-            billing_yen = math.ceil(billing * exchange_rate)
+            billing_yen = (billing * exchange_rate).quantize(
+                Decimal("0.00"), rounding=ROUND_UP
+            )
             details.append(f"・{service_name}: ￥{billing_yen} ({billing:.2f} USD)")
         else:
             details.append(f"・{service_name}: {billing:.2f} USD")
@@ -205,7 +204,7 @@ def get_message(total_billing: dict, service_billings: list) -> (str, str):
     return title, "\n".join(details), footer
 
 
-def get_total_cost_date_range() -> (str, str):
+def get_total_cost_date_range() -> (str, str):  # type: ignore
     """
     awsから取得する使用料金の期間を返却する
     期間はAPI実行日付の1月前

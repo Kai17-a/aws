@@ -11,6 +11,9 @@ Parameters:
   DiscordWebhookUrl:
     Type: String
     Default: hoge
+  ChangeRateUrl:
+    Type: String
+    Default: hoge
 
 Resources:
   BillingIamRole:
@@ -48,9 +51,13 @@ Resources:
       Environment:
         Variables:
           DISCORD_WEBHOOK_URL: !Ref DiscordWebhookUrl
+          CHANGE_RATE_URL: !Ref ChangeRateUrl
       Role: !GetAtt BillingIamRole.Arn
       Events:
-        NotifySlack:
-          Type: Schedule
+        NotifyBillingSchedule:
+          Type: ScheduleV2
           Properties:
-            Schedule: cron(0 12 1 * ? *) # 毎月1日PM12時
+            Name: NotificationBillingSchedule
+            ScheduleExpression: cron(0 9 1 * ? *) # 毎月1日PM12時
+            Description: 毎月1日に通知
+            ScheduleExpressionTimezone: "Asia/Tokyo"
