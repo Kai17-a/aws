@@ -45,7 +45,7 @@ Resources:
       FunctionName: notify-billing-function
       CodeUri: notify_billing/
       Handler: app.lambda_handler
-      Runtime: python3.9
+      Runtime: python3.12
       Architectures:
       - x86_64
       Environment:
