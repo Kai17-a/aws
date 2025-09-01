@@ -58,6 +58,6 @@ Resources:
           Type: ScheduleV2
           Properties:
             Name: NotificationBillingSchedule
-            ScheduleExpression: cron(0 9 1 * ? *) # 毎月1日PM12時
+            ScheduleExpression: cron(0 21 1 * ? *) # 毎月1日PM21時
             Description: 毎月1日に通知
             ScheduleExpressionTimezone: "Asia/Tokyo"
