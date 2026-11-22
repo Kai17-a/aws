@@ -22,6 +22,7 @@ Resources:
   NotifyBillingLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
+      LogGroupName: /aws/lambda/notify-billing-function
       RetentionInDays: 90
 
   BillingIamRole:
