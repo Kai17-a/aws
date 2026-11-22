@@ -1,0 +1,24 @@
+# Git hooks managed by prek. Install them once with `mise run setup-hooks`.
+minimum_prek_version = "0.5.0"
+default_install_hook_types = ["pre-commit", "pre-push"]
+
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "trailing-whitespace", stages = ["pre-commit"] },
+  { id = "end-of-file-fixer", stages = ["pre-commit"] },
+  { id = "check-toml", stages = ["pre-commit"] },
+  { id = "check-merge-conflict", stages = ["pre-commit"] },
+  { id = "detect-private-key", stages = ["pre-commit"] },
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+  # Uses the betterleaks binary installed by mise (see mise.toml).
+  { id = "betterleaks", name = "Detect hardcoded secrets", language = "system", entry = "betterleaks git --pre-commit --redact --staged --verbose --no-banner -c .betterleaks.toml", pass_filenames = false, stages = ["pre-commit"] },
+  { id = "lint", name = "Python lint", language = "system", entry = "mise run lint", files = "^billing-app/.*\\.py$", pass_filenames = false, stages = ["pre-commit"] },
+  { id = "format-check", name = "Python format check", language = "system", entry = "mise run format-check", files = "^billing-app/.*\\.py$", pass_filenames = false, stages = ["pre-commit"] },
+  { id = "validate", name = "SAM template validation", language = "system", entry = "mise run validate", files = "^billing-app/template\\.yaml$", pass_filenames = false, stages = ["pre-commit"] },
+  { id = "test", name = "billing-app tests", language = "system", entry = "mise run test", files = "^billing-app/", pass_filenames = false, stages = ["pre-push"] },
+]

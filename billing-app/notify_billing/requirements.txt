@@ -1,3 +1,2 @@
-requests
-urllib3<2
-boto3
+# 実行時の依存パッケージはなし(boto3 は Lambda ランタイムに同梱されている)
+# 開発用の依存パッケージは ../pyproject.toml を参照

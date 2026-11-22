@@ -1,263 +1,252 @@
-import os
-import boto3
-import requests
+import json
 import logging
-from datetime import datetime, timedelta, timezone
-from decimal import *
+import os
+import urllib.request
+from datetime import date, datetime, timedelta, timezone
+from decimal import ROUND_HALF_UP, Decimal
 
-# ログ設定
-logging.basicConfig(
-    level=logging.INFO, format="[%(levelname)s] %(asctime)s %(message)s"
-)
+import boto3
+
+# Lambda の Python ランタイムはルートロガーにハンドラを設定済みのため、
+# basicConfig ではなくレベルだけ設定する
 logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
-# boto3クライアント
-ce_client = boto3.client("ce", region_name="ap-northeast-1")
-
-# JSTタイムゾーンと現在時刻
 JST = timezone(timedelta(hours=+9), "JST")
-dt_now = datetime.now(JST)
+
+# 外部 HTTP 通信のタイムアウト(秒)。Lambda のタイムアウト(25秒)より十分短くする
+HTTP_TIMEOUT_SECONDS = 10
+USER_AGENT = "notify-billing-lambda/1.0"
+
+# Discord の embed description の上限文字数
+DISCORD_DESCRIPTION_LIMIT = 4096
+
+CENT = Decimal("0.01")
+YEN = Decimal("1")
 
 
-def get_exchange_rate() -> Decimal:
+def today_jst() -> date:
+    """JST の現在日付を返す"""
+    return datetime.now(JST).date()
+
+
+def get_date_range(today: date) -> tuple[date, date]:
     """
-    ドル円為替レート取得
+    Cost Explorer から取得する期間を返す
+
+    実行日が月初なら前月分、それ以外は当月1日から前日までを対象とする。
+
+    Parameters
+    ----------
+    today : date
+        実行日
 
     Returns
     -------
-    exchange_rate : Decimal
+    start : date
+        期初(この日を含む)
+    end : date
+        期末(この日を含まない。Cost Explorer の TimePeriod.End と同じ扱い)
+    """
+    this_month_first = today.replace(day=1)
+    if today.day == 1:
+        start = (this_month_first - timedelta(days=1)).replace(day=1)
+    else:
+        start = this_month_first
+    return start, today
+
+
+def get_service_billings(client, start: date, end: date) -> dict[str, Decimal]:
+    """
+    AWS 使用料金をサービスごとに取得する
+
+    Parameters
+    ----------
+    client : boto3 の Cost Explorer クライアント
+    start : date
+        期初(含む)
+    end : date
+        期末(含まない)
+
+    Returns
+    -------
+    billings : dict[str, Decimal]
+        サービス名をキー、料金(USD)を値とする辞書
+    """
+    params = {
+        "TimePeriod": {"Start": start.isoformat(), "End": end.isoformat()},
+        "Granularity": "MONTHLY",
+        "Metrics": ["AmortizedCost"],
+        "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}],
+    }
+    billings: dict[str, Decimal] = {}
+    while True:
+        response = client.get_cost_and_usage(**params)
+        for result in response["ResultsByTime"]:
+            for group in result["Groups"]:
+                name = group["Keys"][0]
+                amount = Decimal(group["Metrics"]["AmortizedCost"]["Amount"])
+                billings[name] = billings.get(name, Decimal(0)) + amount
+        token = response.get("NextPageToken")
+        if not token:
+            return billings
+        params["NextPageToken"] = token
+
+
+def get_exchange_rate() -> Decimal | None:
+    """
+    ドル円為替レートを取得する
+
+    取得できない場合は None を返し、通知は USD のみで行う。
+
+    Returns
+    -------
+    exchange_rate : Decimal | None
         ドル円為替レート
     """
-    url = os.getenv("CHANGE_RATE_URL")
+    url = os.getenv("EXCHANGE_RATE_URL")
     if not url:
-        logger.error("CHANGE_RATE_URLが設定されていません。")
-        return Decimal(0)
+        logger.warning("EXCHANGE_RATE_URLが設定されていないため、USDのみで通知します。")
+        return None
 
     try:
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
-        return Decimal(data["values"][0][0])
-    except Exception as e:
-        logger.error(f"為替レートの取得に失敗しました。エラー: {str(e)}")
-        return Decimal(0)
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS) as res:
+            data = json.load(res, parse_float=Decimal)
+        rate = Decimal(str(data["values"][0][0]))
+    except Exception:
+        logger.exception("為替レートの取得に失敗しました。USDのみで通知します。")
+        return None
+
+    if rate <= 0:
+        logger.error(f"為替レートが不正です。USDのみで通知します。rate={rate}")
+        return None
+    return rate
 
 
-def post_discord(title: str, msg: str, footer: str) -> None:
+def format_amount(usd: Decimal, exchange_rate: Decimal | None) -> str:
+    """金額を表示用の文字列にする(円は丸める前の USD から計算する)"""
+    usd_text = usd.quantize(CENT, rounding=ROUND_HALF_UP)
+    if exchange_rate is None:
+        return f"{usd_text} USD"
+    yen = (usd * exchange_rate).quantize(YEN, rounding=ROUND_HALF_UP)
+    return f"￥{yen:,} ({usd_text} USD)"
+
+
+def build_message(
+    start: date,
+    end: date,
+    billings: dict[str, Decimal],
+    exchange_rate: Decimal | None,
+    run_date: date,
+) -> tuple[str, str, str]:
     """
-    discord webhook通知
+    Discord へ送信するメッセージを作成する
 
     Parameters
     ----------
-    msg : 送信メッセージ
-    """
-    url = os.getenv("DISCORD_WEBHOOK_URL")
-    if not url:
-        logger.error("DISCORD_WEBHOOK_URLが設定されていません。")
-        return
-
-    body = {
-        "content": "@everyone\n",
-        "embeds": [{"title": title, "description": msg}],
-    }
-
-    if footer:
-        body["embeds"][0]["footer"] = {"text": footer}
-
-    try:
-        requests.post(url, json=body)
-    except Exception as e:
-        logger.exception(f"Discordへの通知に失敗しました。エラー: {str(e)}")
-
-
-def get_total_billing(client) -> dict[str, str | Decimal]:
-    """
-    AWS使用料金の総額取得
-
-    Parameters
-    ----------
-    client : boto3.client
-
-    Returns
-    -------
-    total_billing : dict
-        総額情報
-        start: 対象期間期初
-        end: 対象期間期末
-        billing: 総額
-    """
-    try:
-        start_date, end_date = get_total_cost_date_range()
-        response = client.get_cost_and_usage(
-            TimePeriod={"Start": start_date, "End": end_date},
-            Granularity="MONTHLY",
-            Metrics=["AmortizedCost"],
-        )
-        # 少数第2で切り上げ
-        billing = Decimal(
-            response["ResultsByTime"][0]["Total"]["AmortizedCost"]["Amount"]
-        ).quantize(Decimal("0.00"), rounding=ROUND_UP)
-
-        return {
-            "start": response["ResultsByTime"][0]["TimePeriod"]["Start"],
-            "end": response["ResultsByTime"][0]["TimePeriod"]["End"],
-            "billing": billing,
-        }
-    except Exception as e:
-        logger.exception(f"資料料金の取得に失敗しました。エラー: {str(e)}")
-        return {}
-
-
-def get_service_billings(client) -> list[dict[str, str | Decimal]]:
-    """
-    AWS使用料金の総額取得
-
-    Parameters
-    ----------
-    client : boto3.client
-
-    Returns
-    -------
-    billings : list[dict]
-        各サービス料金内訳
-        service_name: サービス名
-        billing: サービス料金
-    """
-    try:
-        start_date, end_date = get_total_cost_date_range()
-        response = client.get_cost_and_usage(
-            TimePeriod={"Start": start_date, "End": end_date},
-            Granularity="MONTHLY",
-            Metrics=["AmortizedCost"],
-            GroupBy=[{"Type": "DIMENSION", "Key": "SERVICE"}],
-        )
-
-        billings = [
-            {
-                "service_name": item["Keys"][0],
-                "billing": Decimal(item["Metrics"]["AmortizedCost"]["Amount"]),
-            }
-            for item in response["ResultsByTime"][0]["Groups"]
-        ]
-        return billings
-    except Exception as e:
-        logger.exception(f"資料料金の取得に失敗しました。エラー: {str(e)}")
-        return []
-
-
-def get_message(total_billing: dict, service_billings: list) -> tuple[str, str, str]:
-    """
-    Discordへ送信するメッセージの内容を作成
-
-    Parameters
-    ----------
-    total_billing : dict
-        総額情報
-    service_billings : list[dict]
-        各サービス料金内訳
+    start : date
+        期初(含む)
+    end : date
+        期末(含まない)
+    billings : dict[str, Decimal]
+        サービスごとの料金(USD)
+    exchange_rate : Decimal | None
+        ドル円為替レート。None なら USD のみ表示する
+    run_date : date
+        実行日(為替レートの取得日)
 
     Returns
     -------
     title : str
-        メッセージタイトル
-    details : str
-        メッセージ内容
+    description : str
     footer : str
-        フッターメッセージ
     """
-    start = datetime.strptime(total_billing["start"], "%Y-%m-%d").strftime("%m/%d")
-    end_today = datetime.strptime(total_billing["end"], "%Y-%m-%d")
-    end_yesterday = end_today.strftime("%m/%d")
+    last_day = end - timedelta(days=1)
+    total = sum(billings.values(), Decimal(0))
+    title = (
+        f"{start:%m/%d}～{last_day:%m/%d}の請求額は、"
+        f"{format_amount(total, exchange_rate)}です。"
+    )
 
-    total = total_billing["billing"]
-    exchange_rate = get_exchange_rate()
+    lines = [
+        f"・{name}: {format_amount(amount, exchange_rate)}"
+        for name, amount in sorted(billings.items(), key=lambda x: x[1], reverse=True)
+        if amount.quantize(CENT, rounding=ROUND_HALF_UP) != 0
+    ]
+    description = truncate_lines(lines, DISCORD_DESCRIPTION_LIMIT)
 
-    # タイトル
-    if exchange_rate > 0:
-        total_yen = (total * exchange_rate).quantize(Decimal("0.00"), rounding=ROUND_UP)
-        title = (
-            f"{start}～{end_yesterday}の請求額は、￥{total_yen} ({total:.2f} USD)です。"
+    footer_lines = []
+    if exchange_rate is not None:
+        footer_lines.append(
+            f"※為替レート: {exchange_rate} 円/ドル ({run_date:%m/%d} 取得)"
         )
-    else:
-        title = f"{start}～{end_yesterday}の請求額は、{total:.2f} USDです。"
+    footer_lines.append("※速報値のため、確定した請求額と異なる場合があります。")
 
-    # メッセージボディ
-    details = []
-    for item in service_billings:
-        service_name = item["service_name"]
-        billing = Decimal(item["billing"]).quantize(Decimal("0.00"), rounding=ROUND_UP)
-
-        if billing == 0:
-            continue
-
-        if exchange_rate > 0:
-            billing_yen = (billing * exchange_rate).quantize(
-                Decimal("0.00"), rounding=ROUND_UP
-            )
-            details.append(f"・{service_name}: ￥{billing_yen} ({billing:.2f} USD)")
-        else:
-            details.append(f"・{service_name}: {billing:.2f} USD")
-
-    # フッターメッセージ
-    footer = ""
-    if exchange_rate > 0:
-        footer = f"※為替レート: {exchange_rate} 円/1ドル ({end_yesterday} 時点)"
-
-    return title, "\n".join(details), footer
+    return title, description, "\n".join(footer_lines)
 
 
-def get_total_cost_date_range() -> tuple[str, str]:
+def truncate_lines(lines: list[str], limit: int) -> str:
+    """行のリストを、上限文字数に収まるように連結する"""
+    text = "\n".join(lines)
+    if len(text) <= limit:
+        return text
+
+    for count in range(len(lines) - 1, -1, -1):
+        rest = f"…ほか{len(lines) - count}件"
+        text = "\n".join([*lines[:count], rest])
+        if len(text) <= limit:
+            return text
+    return text[:limit]
+
+
+def post_discord(title: str, description: str, footer: str) -> None:
     """
-    awsから取得する使用料金の期間を返却する
-    期間はAPI実行日付の1月前
+    Discord Webhook へ通知する
 
-    Returns
-    -------
-    start_date : str
-        期初
-    end_date : str
-        期末
+    失敗した場合は例外を送出する。
+
+    Parameters
+    ----------
+    title : str
+        embed のタイトル
+    description : str
+        embed の本文
+    footer : str
+        embed のフッター
     """
-    end_date = (dt_now + timedelta(days=-1)).strftime("%Y-%m-%d")
-    start_date = (
-        get_last_month_first_day() if dt_now.day == 1 else get_this_month_first_day()
+    url = os.getenv("DISCORD_WEBHOOK_URL")
+    if not url:
+        raise RuntimeError("DISCORD_WEBHOOK_URLが設定されていません。")
+
+    embed = {"title": title, "description": description}
+    if footer:
+        embed["footer"] = {"text": footer}
+    body = {"content": "@everyone\n", "embeds": [embed]}
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
+        method="POST",
     )
-    return start_date, end_date
-
-
-def get_last_month_first_day() -> str:
-    """
-    システム日付一月前月初日付を取得
-
-    Returns
-    -------
-    last_month_first_day : str
-    """
-    last_month = dt_now.month - 1
-    last_month_year = dt_now.year
-    if last_month == 0:
-        last_month = 12
-        last_month_year -= 1
-    return dt_now.replace(year=last_month_year, month=last_month, day=1).strftime(
-        "%Y-%m-%d"
-    )
-
-
-def get_this_month_first_day() -> str:
-    """
-    システム日付月初日付を取得
-
-    Returns
-    -------
-    this_month_first_day : str
-    """
-    return dt_now.replace(day=1).strftime("%Y-%m-%d")
+    # 4xx/5xx は HTTPError として送出される
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_SECONDS):
+        pass
 
 
 def lambda_handler(event, context) -> None:
-    total_billing = get_total_billing(ce_client)
-    if not total_billing:
-        return
-    service_billings = get_service_billings(ce_client)
-    title, detail, footer = get_message(total_billing, service_billings)
-    post_discord(title, detail, footer)
+    run_date = today_jst()
+    start, end = get_date_range(run_date)
+    logger.info(f"対象期間: {start} ～ {end}(含まない)")
+
+    # Cost Explorer のエンドポイントは us-east-1
+    client = boto3.client("ce", region_name="us-east-1")
+    billings = get_service_billings(client, start, end)
+    exchange_rate = get_exchange_rate()
+
+    title, description, footer = build_message(
+        start, end, billings, exchange_rate, run_date
+    )
+    post_discord(title, description, footer)
+    logger.info("Discordへ通知しました。")

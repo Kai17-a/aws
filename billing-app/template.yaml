@@ -1,21 +1,30 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: Notify Dsicord every month 1st of AWS billing
+Description: Notify Discord every month 1st of AWS billing
 
 Globals:
   Function:
     Timeout: 25
-    MemorySize: 512
+    MemorySize: 128
 
 Parameters:
   DiscordWebhookUrl:
     Type: String
-    Default: hoge
+    NoEcho: true
+    Description: Discord の Webhook URL(必須)
   ChangeRateUrl:
     Type: String
-    Default: hoge
+    NoEcho: true
+    Default: ""
+    Description: ドル円為替レートを返す API の URL(空の場合は USD のみで通知)
 
 Resources:
+  NotifyBillingLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/notify-billing-function
+      RetentionInDays: 7
+
   BillingIamRole:
     Type: AWS::IAM::Role
     Properties:
@@ -33,9 +42,12 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - "logs:CreateLogGroup"
                   - "logs:CreateLogStream"
                   - "logs:PutLogEvents"
+                Resource: !Sub "${NotifyBillingLogGroup.Arn}:*"
+              # Cost Explorer はリソース単位の指定ができない
+              - Effect: Allow
+                Action:
                   - "ce:GetCostAndUsage"
                 Resource: "*"
 
@@ -47,17 +59,19 @@ Resources:
       Handler: app.lambda_handler
       Runtime: python3.12
       Architectures:
-      - x86_64
+      - arm64
+      LoggingConfig:
+        LogGroup: !Ref NotifyBillingLogGroup
       Environment:
         Variables:
           DISCORD_WEBHOOK_URL: !Ref DiscordWebhookUrl
-          CHANGE_RATE_URL: !Ref ChangeRateUrl
+          EXCHANGE_RATE_URL: !Ref ChangeRateUrl
       Role: !GetAtt BillingIamRole.Arn
       Events:
         NotifyBillingSchedule:
           Type: ScheduleV2
           Properties:
             Name: NotificationBillingSchedule
-            ScheduleExpression: cron(0 21 1 * ? *) # 毎月1日PM21時
+            ScheduleExpression: cron(0 21 1 * ? *) # 毎月1日 21時
             Description: 毎月1日に通知
             ScheduleExpressionTimezone: "Asia/Tokyo"

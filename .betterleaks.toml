@@ -1,0 +1,12 @@
+# betterleaks の設定。既定のルールに、このリポジトリ用のルールを追加する。
+title = "aws repository betterleaks config"
+
+[extend]
+useDefault = true
+
+# 既定のルールには Discord の Webhook URL が含まれていないため追加する
+[[rules]]
+id = "discord-webhook-url"
+description = "Discord Webhook URL"
+regex = '''https://(?:(?:canary|ptb)\.)?discord(?:app)?\.com/api/webhooks/[0-9]{17,20}/[A-Za-z0-9_-]{60,80}'''
+keywords = ["discord.com/api/webhooks", "discordapp.com/api/webhooks"]
