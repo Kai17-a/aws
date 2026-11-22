@@ -1,0 +1,89 @@
+[tools]
+aws-sam = "1.174.0"
+betterleaks = "1.10.1"
+cfn-lint = "1.61.0"
+prek = "0.5.11"
+python = "3.12"
+uv = "0.13.9"
+
+# ---------------------------------------------------------------------------
+# セットアップ
+# ---------------------------------------------------------------------------
+
+[tasks.setup]
+description = "Install the dev dependencies and the prek Git hooks"
+depends = ["install", "setup-hooks"]
+
+[tasks.install]
+description = "Install the billing-app dev dependencies with uv"
+dir = "billing-app"
+run = "uv sync"
+
+[tasks.setup-hooks]
+description = "Install the prek-managed Git hooks"
+run = "prek install"
+
+# ---------------------------------------------------------------------------
+# billing-app のチェック
+# ---------------------------------------------------------------------------
+
+[tasks.test]
+description = "Run the billing-app tests"
+dir = "billing-app"
+run = "uv run pytest -q"
+
+[tasks.lint]
+description = "Lint the billing-app Python code"
+dir = "billing-app"
+run = "uv run ruff check ."
+
+[tasks.format]
+description = "Format the billing-app Python code"
+dir = "billing-app"
+run = "uv run ruff format ."
+
+[tasks.format-check]
+description = "Check the billing-app Python code formatting"
+dir = "billing-app"
+run = "uv run ruff format --check ."
+
+[tasks.validate]
+description = "Validate the SAM template"
+dir = "billing-app"
+run = "cfn-lint template.yaml"
+
+# ---------------------------------------------------------------------------
+# リポジトリ全体のチェック
+# ---------------------------------------------------------------------------
+
+[tasks.betterleaks]
+description = "Scan all files in the repository for secrets (tracked and untracked, excluding gitignored files)"
+run = "git ls-files -z --cached --others --exclude-standard | xargs -0 betterleaks dir -c .betterleaks.toml --redact --no-banner --verbose"
+
+[tasks."betterleaks:history"]
+description = "Scan the whole Git history for secrets"
+run = "betterleaks git -c .betterleaks.toml --redact --no-banner --verbose"
+
+[tasks.prek]
+description = "Run all prek hooks against all files"
+run = "prek run --all-files"
+
+[tasks.check]
+description = "Run all repository checks"
+depends = ["lint", "format-check", "test", "validate", "betterleaks"]
+
+# ---------------------------------------------------------------------------
+# ビルド・デプロイ
+# ---------------------------------------------------------------------------
+
+[tasks.build]
+description = "Build the billing-app with SAM"
+dir = "billing-app"
+run = "sam build"
+
+[tasks.deploy]
+description = "Deploy the billing-app with SAM (uses samconfig.toml)"
+depends = ["check", "build"]
+dir = "billing-app"
+raw = true
+run = "sam deploy"
